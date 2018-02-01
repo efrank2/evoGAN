@@ -14,8 +14,7 @@ import pickle
 import sklearn.datasets
 import sklearn.metrics
 from sklearn import mixture
-
-import ot
+from emd import emd
 import scipy as sp
 
 batch_size = 512
@@ -25,33 +24,19 @@ Z_dim      = 32
 Utility functions
 '''
 
-# If we want to use earth mover distance
-def earth_mover(xs, xt, n_samples=150):
-	C1 = sp.spatial.distance.cdist(xs, xs)
-	C2 = sp.spatial.distance.cdist(xt, xt)
-
-	C1 /= C1.max()
-	C2 /= C2.max()
-
-	p = ot.unif(n_samples)
-	q = ot.unif(n_samples)
-
-	gw_dist = ot.gromov_wasserstein2(C1, C2, p, q, 'square_loss', epsilon=5e-4)
-	return gw_dist
-
-def save_as_gif():
+def save_as_gif(directory):
 	from os import listdir
 	from os.path import isfile, join
-	filenames = [f for f in listdir('figs/') if isfile(join('figs/', f))]
+	filenames = [f for f in listdir(directory) if isfile(join(directory, f))]
 	images = []
-	for filename in filenames[1:-2]:
-		images.append(imageio.imread('./figs/' + filename))
-	imageio.mimsave('./figs/animation.gif', images)
+	for filename in filenames[1:]:
+		images.append(imageio.imread(directory + '/' + filename))
+	imageio.mimsave(directory + '/animation.gif', images)
 
 color_iter = itertools.cycle(['navy', 'c', 'cornflowerblue', 'gold',
                               'darkorange'])
 
-def plot_results(X, Y_, means, covariances, index, title):
+def plot_results(X, Y_, means, covariances, index, title, directory='figs'):
     splot = plt.subplot(1, 1, 1)
     for i, (mean, covar, color) in enumerate(zip(
             means, covariances, color_iter)):
@@ -77,7 +62,7 @@ def plot_results(X, Y_, means, covariances, index, title):
     plt.ylim([-0.2,1.2])
 
     plt.title(title)
-    plt.savefig('figs/%06d.png' % index, bbox_inches='tight')
+    plt.savefig(directory + '/%06d.png' % index, bbox_inches='tight')
 
 def sample_Z(m, n):
     return np.random.normal(size=[m, n])
@@ -183,10 +168,6 @@ data, _ = make_grid_data(3)
 data_size = len(data)
 data = np.concatenate((data, data[:batch_size,:]), axis=0)
 
-# Start the session
-sess = tf.Session()
-sess.run(tf.global_variables_initializer())
-
 # Make and save vis of true distribution
 save_fig_path = 'figs'
 plt.figure(figsize=(5,5))
@@ -197,30 +178,53 @@ axes.set_ylim([-0.2,1.2])
 plt.title('True data distribution')
 plt.savefig(save_fig_path + '/real.png', bbox_inches='tight')
 
-# Train
-np_samples = []
-plot_every = 1000
-# plt.figure(figsize=(5,5))
-dists = []
-for it in range(30000):
-    start_idx = it*batch_size%data_size
-    X_mb = data[start_idx:start_idx+batch_size, :]
+num_runs = 20
 
-    _, D_loss_curr = sess.run([D_solver, D_loss], feed_dict={X: X_mb, Z: sample_Z(batch_size, Z_dim)})
-    _, G_loss_curr = sess.run([G_solver, G_loss], feed_dict={X: X_mb, Z: sample_Z(batch_size, Z_dim)})
-      
+all_emd = []
 
-    if (it+1) % plot_every == 0:
-        samples = sess.run(G_sample, feed_dict={Z: sample_Z(150, Z_dim)})
-        dist = earth_mover(samples, data[:150], 150)
-        print(dist)
-        dists.append(dist)
-        np_samples.append(samples)
-        # Clear plot
-        plt.clf()     
-        # Fit GMM to output
-        dpgmm = mixture.BayesianGaussianMixture(n_components=9,
-        	covariance_type='full').fit(samples)
-        plot_results(samples, dpgmm.predict(samples), dpgmm.means_, dpgmm.covariances_, it,
-        	'Iter: {}, loss(D): {:2.2f}, loss(G):{:2.2f}'.format(it+1, D_loss_curr, G_loss_curr))
-save_as_gif()
+for i in range(num_runs):
+    directory = save_fig_path + '/run%d' % i
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    # Start the session
+    sess = tf.Session()
+    sess.run(tf.global_variables_initializer())
+
+    # Train
+    np_samples = []
+    plot_every = 1000
+    dists = []
+    for it in range(50000):
+        start_idx = it*batch_size%data_size
+        X_mb = data[start_idx:start_idx+batch_size, :]
+
+        _, D_loss_curr = sess.run([D_solver, D_loss], feed_dict={X: X_mb, Z: sample_Z(batch_size, Z_dim)})
+        _, G_loss_curr = sess.run([G_solver, G_loss], feed_dict={X: X_mb, Z: sample_Z(batch_size, Z_dim)})
+          
+        if (it+1) % plot_every == 0:
+            samples = sess.run(G_sample, feed_dict={Z: sample_Z(1000, Z_dim)})
+            dist = emd(np.random.permutation(samples)[:250], np.random.permutation(data)[:250])
+            dists.append(dist)
+            np_samples.append(samples)
+            # Clear plot
+            plt.clf()     
+            # Fit GMM to output
+            dpgmm = mixture.BayesianGaussianMixture(n_components=9,
+            	covariance_type='full').fit(samples)
+            plot_results(samples, dpgmm.predict(samples), dpgmm.means_, dpgmm.covariances_, it,
+            	'Iter: {}, loss(D): {:2.2f}, loss(G):{:2.2f}'.format(it+1, D_loss_curr, G_loss_curr), directory)
+    
+    all_emd.append(dists)
+
+    plt.clf()
+    plt.plot(dists)
+    plt.ylabel('Earth Mover Distance (Target, Samples)')
+    plt.xlabel('Epochs')
+    plt.title('Earth Mover Distance GAN Through Training')
+    plt.savefig(directory + '/emd.png', bbox_inches='tight')
+    plt.clf()
+    save_as_gif(directory)
+
+import pickle
+pickle.dump(all_emd, open("earth_mover_distances.p", "wb"))
