@@ -29,7 +29,7 @@ def make_grid_data(n_gauss=3, std=0.01):
 	xv, yv = list(np.reshape(xv, -1)), list(np.reshape(yv, -1))
 	blob_centers = zip(xv, yv)
 
-	dataset, _ = sklearn.datasets.make_blobs(n_samples=10000, centers=blob_centers, cluster_std=std)
+	dataset, _ = sklearn.datasets.make_blobs(n_samples=1000, centers=blob_centers, cluster_std=std)
 	return dataset, blob_centers
 
 def xavier_init(size):
@@ -43,7 +43,9 @@ Genome
 The genome is a numpy array the same size as the number of params in the network.
 Only encode hidden layer sparsity, it's easier.
 '''
+
 genome = np.random.randint(2, size=32*32*2+32*2).astype(np.float32)
+
 # Indices of the tensors in genome
 h1w_i = 32*32
 h1b_i = h1w_i + 32
