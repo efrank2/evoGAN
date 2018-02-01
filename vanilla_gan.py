@@ -2,19 +2,82 @@ import tensorflow as tf
 import numpy as np
 import matplotlib
 import pdb
+import itertools
+from scipy import linalg
+import imageio
 # matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib as mpl
 import os
 import pickle
 import sklearn.datasets
+import sklearn.metrics
+from sklearn import mixture
+
+import ot
+import scipy as sp
 
 batch_size = 512
-Z_dim      = 256
+Z_dim      = 32
 
 '''
 Utility functions
 '''
+
+# If we want to use earth mover distance
+def earth_mover(xs, xt, n_samples=150):
+	C1 = sp.spatial.distance.cdist(xs, xs)
+	C2 = sp.spatial.distance.cdist(xt, xt)
+
+	C1 /= C1.max()
+	C2 /= C2.max()
+
+	p = ot.unif(n_samples)
+	q = ot.unif(n_samples)
+
+	gw_dist = ot.gromov_wasserstein2(C1, C2, p, q, 'square_loss', epsilon=5e-4)
+	return gw_dist
+
+def save_as_gif():
+	from os import listdir
+	from os.path import isfile, join
+	filenames = [f for f in listdir('figs/') if isfile(join('figs/', f))]
+	images = []
+	for filename in filenames[1:-2]:
+		images.append(imageio.imread('./figs/' + filename))
+	imageio.mimsave('./figs/animation.gif', images)
+
+color_iter = itertools.cycle(['navy', 'c', 'cornflowerblue', 'gold',
+                              'darkorange'])
+
+def plot_results(X, Y_, means, covariances, index, title):
+    splot = plt.subplot(1, 1, 1)
+    for i, (mean, covar, color) in enumerate(zip(
+            means, covariances, color_iter)):
+        v, w = linalg.eigh(covar)
+        v = 2. * np.sqrt(2.) * np.sqrt(v)
+        u = w[0] / linalg.norm(w[0])
+        # as the DP will not use every component it has access to
+        # unless it needs it, we shouldn't plot the redundant
+        # components.
+        if not np.any(Y_ == i):
+            continue
+        plt.scatter(X[Y_ == i, 0], X[Y_ == i, 1], .8, color=color)
+
+        # Plot an ellipse to show the Gaussian component
+        angle = np.arctan(u[1] / u[0])
+        angle = 180. * angle / np.pi  # convert to degrees
+        ell = mpl.patches.Ellipse(mean, v[0], v[1], 180. + angle, color=color)
+        ell.set_clip_box(splot.bbox)
+        ell.set_alpha(0.5)
+        splot.add_artist(ell)
+
+    plt.xlim([-0.2,1.2])
+    plt.ylim([-0.2,1.2])
+
+    plt.title(title)
+    plt.savefig('figs/%06d.png' % index, bbox_inches='tight')
 
 def sample_Z(m, n):
     return np.random.normal(size=[m, n])
@@ -93,7 +156,7 @@ def gan_discriminator(x_real, x_fake):
     D_h2_fake = tf.nn.relu(tf.matmul(D_h1_fake, D_W2) + D_b2) + D_h1_fake
     D_h3_fake = tf.nn.relu(tf.matmul(D_h2_fake, D_W3) + D_b3) + D_h2_fake
     D_logit_fake = tf.matmul(D_h3_fake, D_W4) + D_b4 
-    D_prob_fake = tf.nn.sigmoid(D_logit_fake)    
+    D_prob_fake = tf.nn.sigmoid(D_logit_fake)
     return D_prob_real, D_logit_real, D_prob_fake, D_logit_fake
 
 # Model placeholders
@@ -137,9 +200,9 @@ plt.savefig(save_fig_path + '/real.png', bbox_inches='tight')
 # Train
 np_samples = []
 plot_every = 1000
-plt.figure(figsize=(5,5))
-
-for it in range(15000):
+# plt.figure(figsize=(5,5))
+dists = []
+for it in range(30000):
     start_idx = it*batch_size%data_size
     X_mb = data[start_idx:start_idx+batch_size, :]
 
@@ -148,13 +211,16 @@ for it in range(15000):
       
 
     if (it+1) % plot_every == 0:
-        samples = sess.run(G_sample, feed_dict={Z: sample_Z(1000, Z_dim)})
-
+        samples = sess.run(G_sample, feed_dict={Z: sample_Z(150, Z_dim)})
+        dist = earth_mover(samples, data[:150], 150)
+        print(dist)
+        dists.append(dist)
         np_samples.append(samples)
-        plt.clf()
-        plt.plot(samples[:,0], samples[:,1], 'b.')
-        axes = plt.gca()
-        axes.set_xlim([-0.2,1.2])
-        axes.set_ylim([-0.2,1.2])
-        plt.title('Iter: {}, loss(D): {:2.2f}, loss(G):{:2.2f}'.format(it+1, D_loss_curr, G_loss_curr))
-        plt.savefig('figs/{}.png'.format(str(it).zfill(3)), bbox_inches='tight')        
+        # Clear plot
+        plt.clf()     
+        # Fit GMM to output
+        dpgmm = mixture.BayesianGaussianMixture(n_components=9,
+        	covariance_type='full').fit(samples)
+        plot_results(samples, dpgmm.predict(samples), dpgmm.means_, dpgmm.covariances_, it,
+        	'Iter: {}, loss(D): {:2.2f}, loss(G):{:2.2f}'.format(it+1, D_loss_curr, G_loss_curr))
+save_as_gif()
